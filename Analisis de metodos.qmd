@@ -1,0 +1,486 @@
+---
+title: "Aplicación de metodologías supervisadas y no supervisadas para la clisifcación de fireware"
+author: "Diego Garcia, Mauricio Lucero, Diego Pinto"
+format: pdf
+editor: visual
+---
+
+En el estudio realizado se analizó un registro de funcionamiento de un firewall y se tiene como objetivo predecir una variable reclasificada a partir de la variable categórica, teniendo como respuesta allow, deny, drop y reset both, en función del resto de atributos. Esto con el fin de predecir el comportamiento del firewall y el tráfico de datos en la red estudiada.
+
+```{r}
+#Uso de paquetes
+library(readr)
+library(DataExplorer)
+library(factoextra)
+library(tidyverse)
+library(ggplot2)
+library(caret)
+library(e1071)
+library(caTools)
+library(plotly)
+library(pROC)
+library(MASS)
+library(dplyr)
+library(PRROC)
+library(class)
+library(tree)
+library(rpart)
+library(rpart.plot)
+library(stargazer)
+library(broom)
+library(modelr)
+library(nnet)
+library(gridExtra)
+library(dplyr)
+library(cluster)
+library(purrr)
+
+
+set.seed(163) #uso de semilla
+
+```
+
+## Análisis Exploratorio de Dato
+
+```{r}
+df <- read.csv("log2.csv") #lectura de data frame
+glimpse(df)
+
+```
+
+```{r}
+plot_bar(df) #visualización de variable categórica
+```
+
+```{r}
+
+sum(df$Action == "reset-both") #cantidad de observaciones con el valor de reset-both
+
+```
+
+```{r}
+plot_intro(df) #visualización del data frame
+```
+
+### Matríz de Correlaciónes
+
+```{r}
+plot_correlation(df) #observación de la correlación de las variables del data frame
+```
+
+```{r}
+#Reducción de correlación entre variables
+df=df %>% dplyr::select(-c("Bytes.Sent","Bytes.Received","pkts_sent","pkts_received"))
+df$Bytes <- log(df$Bytes)
+
+plot_correlation(df)
+```
+
+### **Box Plot**
+
+```{r}
+#Identificación de datos anómalos
+
+variables <- c("Source.Port", "Destination.Port", "NAT.Source.Port", "NAT.Destination.Port", "Bytes", "Bytes", "Packets", "Elapsed.Time..sec.")
+
+plots <- list()
+
+for (variable in variables) {
+  plot <- ggplot(df) +
+    geom_boxplot(aes(x = Action, y = .data[[variable]], fill = Action), shape = "circle") +
+    scale_fill_hue(direction = -1) +
+    theme_gray() +
+    ggtitle(paste("Gráfico de", variable))
+  print(plot)
+  plots[[variable]] <- plot
+}
+
+```
+
+### Outliers
+
+```{r}
+#Eliminación de datos anomalos
+for (i in c("Source.Port", "Destination.Port", "NAT.Source.Port", "NAT.Destination.Port","Elapsed.Time..sec.","Bytes","Packets"))
+{
+outliers <- boxplot.stats(df[[i]])$out
+df[[i]][df[[i]] %in% outliers] <- NA
+}
+df <- filter_if(df, is.numeric , all_vars(!is.na(.)))
+```
+
+```{r}
+#Visualización de variables sin datos anómalos
+variables <- c("Source.Port", "Destination.Port", "NAT.Source.Port", "NAT.Destination.Port", "Bytes", "Bytes", "Packets", "Elapsed.Time..sec.")
+
+plots <- list()
+
+for (variable in variables) {
+  plot <- ggplot(df) +
+    geom_boxplot(aes(x = Action, y = .data[[variable]], fill = Action), shape = "circle") +
+    scale_fill_hue(direction = -1) +
+    theme_gray() +
+    ggtitle(paste("Gráfico de", variable))
+  print(plot)
+  plots[[variable]] <- plot
+}
+```
+
+### Análisis de Componentes Principales
+
+```{r}
+db=df %>% dplyr::select(-Action)
+pca <- prcomp(db, scale = TRUE)
+prop_varianza <- pca$sdev^2 / sum(pca$sdev^2)
+```
+
+```{r}
+prop_varianza_acum <- cumsum(prop_varianza)
+pca_var_acum<-ggplot(data = data.frame(prop_varianza_acum, pc = 1:length(prop_varianza)), aes(x = pc, y = prop_varianza_acum, group = 1)) +
+  geom_point() +  geom_line() +  theme_bw() +  labs(x = "Componente principal", y = "Prop. varianza explicada acumulada")
+pca_var_acum
+```
+
+```{r}
+library(corrplot)
+var <- get_pca_var(pca)
+corrplot(var$cos2, is.corr = FALSE)
+```
+
+```{r}
+plot_prcomp(db) 
+```
+
+## Métodos Supervisados
+
+### 
+
+```{r}
+#Binarización de variable categórica
+df$Action[df$Action == "allow"]<-1
+df$Action[df$Action == "drop"]<-0
+df$Action[df$Action == "deny"]<-0
+df$Action[df$Action == "reset-both"]<-0
+df$Action <- as.integer(df$Action)
+```
+
+```{r}
+#Creación del conjunto de entrenamiento y de prueba
+split = sample.split(df$Action , SplitRatio = 0.8)
+train <- df[split==TRUE,]
+test <- df[split ==FALSE,]
+```
+
+### Regresión Logística
+
+```{r}
+#Regresión Logística con todas la variables
+glm1 <- glm(Action ~ . , data = train, family = "binomial")
+summary(glm1)
+
+```
+
+```{r}
+#Estimación del modelo con menor coeficiente de Akaike
+step(glm1)
+```
+
+```{r}
+#Regresión Logística mediante componentes principales
+pca <- prcomp(db,scale. = TRUE)
+y<-df$Action
+pc_data <- as.data.frame(predict(pca))
+pc_data <- cbind(pc_data, y)
+
+train_index <- createDataPartition(pc_data$y, p = 0.7, list = FALSE)
+train_data <- pc_data[train_index, ]
+test_data <- pc_data[-train_index, ]
+
+glm3 <- glm(y ~ ., data = train_data, family = "binomial")
+
+summary(glm3)
+
+#prop_var_acumulada <- cumsum(pca_result$sdev^2) / sum(pca_result$sdev^2)
+#num_componentes <- sum(prop_var_acumulada <= 0.80)
+
+#matriz_componentes <- as.data.frame(predict(pca_result, newdata = db)[, 1:num_componentes])
+
+#glm3 <- glm(df$Action ~ ., data = matriz_componentes, family = "binomial")
+#summary(glm3)
+```
+
+```{r}
+#Predicción del modelo que contiene todas las variables
+pred_logistic<-predict(glm1,test,type="response")
+y_pred = rep(0, length(pred_logistic))
+y_pred[pred_logistic > 0.6] = 1
+
+y_pred<-as.factor(y_pred)
+test$Action <- as.factor(test$Action)
+
+confusionMatrix(y_pred, test$Action)
+```
+
+```{r}
+#Predicción del modelo realizado a través de componentes principales
+predictions <- predict(glm3, newdata = test_data, type = "response")
+confusion_matrix <- table(test_data$y, ifelse(predictions > 0.5, 1, 0))
+confusionMatrix(confusion_matrix, dnn = c("Clase real", "Clase predicha"))
+
+```
+
+### Análisis Discriminante Lineal
+
+```{r}
+#LDA
+lda1 <- lda(Action ~ ., data = train)
+lda1
+```
+
+```{r}
+#Predicción de LDA
+predic_lda <- predict(object = lda1, newdata = test)
+confusionMatrix(table(test$Action, predic_lda$class, dnn = c("Clase real", "Clase predicha")))
+```
+
+### Análisis Discriminante Cuadrático
+
+```{r}
+#QDA
+qda1 <- qda(Action ~ ., data = train)
+qda1
+```
+
+```{r}
+#Predicción de QDA
+predic_qda <- predict(object = qda1, newdata = test)
+confusionMatrix(table(test$Action, predic_qda$class, dnn = c("Clase real", "Clase predicha")))
+```
+
+### K-Vecinos cercanos
+
+```{r}
+#Definición de conjuntos de entrenamientos y prueba para KNN
+train_knn <- train %>% dplyr::select(-c("Action"))
+test_knn <- test %>% dplyr::select(-c("Action"))
+```
+
+```{r}
+#Calculo de sensitivity hasta k = 15
+overall.sensitivity = c()
+for (i in 1:15){
+  set.seed(163)
+  knn.pred=knn(train_knn,test_knn,train$Action,k=i)
+  values = confusionMatrix(table(knn.pred,test$Action))
+  overall = values$byClass
+  overall.sensitivity = append(overall.sensitivity , overall["Sensitivity"])
+}
+```
+
+```{r}
+#Visualización de sensitivity calculado
+sens <- data.frame(k=1:15, sensitivity = overall.sensitivity)
+ggplot(sens) + aes(x = k, y = sensitivity) +geom_line(size = 0.5, colour = "#112446") +  theme_light() + geom_vline(xintercept = 2, color = "red")
+
+```
+
+```{r}
+#Predicción de KNN con K = 2
+knn.pred=knn(train_knn,test_knn,train$Action,k=2)
+confusionMatrix(table(knn.pred,test$Action))
+```
+
+### Arbol de desision
+
+```{r}
+## Decision Tree ----
+
+dt <- df
+
+dt$Action[dt$Action == 1] <- "allow"
+dt$Action[dt$Action == 0] <- "drop"
+dt$Action[dt$Action == 2] <- "deny"
+dt$Action[dt$Action == 3] <- "reset-both"
+dt$Action <- as.factor(dt$Action)
+
+split <- sample.split(dt$Action, SplitRatio = 0.8)
+train_tree <- dt[split == TRUE, ]
+test_tree <- dt[split == FALSE, ]
+
+### Decision Tree base ----
+
+tree.fit <- tree(Action ~ ., data = train_tree)
+summary(tree.fit)
+
+### Plot ----
+
+plot(tree.fit)
+text(tree.fit, pretty = 0)
+
+### Matriz de confusión ----
+
+tree_pred <- predict(tree.fit, test_tree, type = "class")
+confusionMatrix(table(tree_pred, test_tree$Action))
+
+```
+
+### Máquina de vectores de soporte
+
+```{r}
+#Adaptación del conjunto de entrenamiento y prueba para SVM
+test$Action <- as.factor(test$Action)
+train$Action <- as.factor(train$Action)
+test[-5] = scale(test[-5])
+train[-5] = scale(train[-5])
+
+svm1<-svm(formula = Action~., data=train, kernel="radial")
+svm2<-svm(formula = Action~., data=train, kernel="linear")
+```
+
+```{r}
+#Predicción de SVM radial y lineal
+pred1<-predict(svm1, newdata=test)
+pred2<-predict(svm2, newdata=test)
+confusionMatrix(table(pred1,test$Action))
+confusionMatrix(table(pred2,test$Action))
+
+```
+
+### Curva ROC
+
+```{r}
+#Regresión Logística
+roc_glm <- roc(test_data$y,predictions)
+plot(roc_glm)
+```
+
+```{r}
+#LDA
+roc_lda <- roc(test$Action,predic_lda$posterior[,2])
+plot(roc_lda)
+```
+
+```{r}
+#QDA
+roc_qda <- roc(test$Action,predic_qda$posterior[,2])
+plot(roc_qda)
+```
+
+## Métodos No Supervisados
+
+### K-Medias
+
+```{r}
+#Definición de kmeans
+k2 <- kmeans(db, centers = 2, nstart = 25)
+k3 <- kmeans(db, centers = 3, nstart = 25)
+k4 <- kmeans(db, centers = 4, nstart = 25)
+k5 <- kmeans(db, centers = 5, nstart = 25)
+
+p1 <- fviz_cluster(k2, geom = "point", data = db) + ggtitle("k = 2")
+p2 <- fviz_cluster(k3, geom = "point",  data = db) + ggtitle("k = 3")
+p3 <- fviz_cluster(k4, geom = "point",  data = db) + ggtitle("k = 4")
+p4 <- fviz_cluster(k5, geom = "point",  data = db) + ggtitle("k = 5")
+```
+
+```{r}
+#Gráfico de kmeans
+grid.arrange(p1, p2, p3, p4, nrow = 2)
+```
+
+```{r}
+#Clusters óptimos
+fviz_nbclust(db, kmeans, method = "wss", k.max = 8)
+```
+
+### Aglomeramiento Jerárquico
+
+```{r}
+#Definición de distancias entre clusters
+d <- dist(db, method = "euclidean")
+```
+
+```{r}
+#Trabajo de datos para reducir el tiempo de procesado
+
+set.seed(163) 
+
+
+
+m <- c("average", "single", "complete", "ward")
+names(m) <- c("average", "single", "complete", "ward")
+
+
+ac <- function(x, db) {
+  agnes(db, method = x)$ac
+}
+
+
+results <- numeric(length(m))
+
+
+for (i in 1:20) {
+  
+  sampled_data <- db[setdiff(1:nrow(db), unique(c(results))), ]
+  sampled_data <- sampled_data[sample(nrow(sampled_data), size = round(nrow(sampled_data) * 0.05)), ]
+  
+  
+  iteration_results <- purrr::map_dbl(m, ~ac(.x, sampled_data))
+  
+  
+  results <- c(results, iteration_results)
+}
+
+
+results <- results[-1]
+
+
+print(results)
+
+```
+
+```{r}
+#Estimación del mejor linkage
+averages <- tapply(results, names(results), mean)
+
+print(averages)
+```
+
+#### Prunning
+
+```{r}
+#Uso del linkage seleccionado
+hc5 <- hclust(d, method = "ward.D2" )
+```
+
+```{r}
+sub_grp <- cutree(hc5, k = 2)
+```
+
+```{r}
+table(sub_grp)
+```
+
+```{r}
+df %>%
+  mutate(cluster = sub_grp) %>%
+  head
+```
+
+```{r}
+#Visualización del cluster
+plot(hc5, cex = 0.6)
+rect.hclust(hc5, k = 2, border = 2:5)
+```
+
+```{r}
+
+fviz_cluster(list(data = db, cluster = sub_grp))
+```
+
+```{r}
+#Valor óptimo de clusters, prueba a través de muestreo aleatorio simple
+db <-db[sample(nrow(db),1000),]
+gap_stat <- clusGap(db, FUN = hcut, nstart = 25, K.max = 10, B = 50)
+fviz_gap_stat(gap_stat)
+```
