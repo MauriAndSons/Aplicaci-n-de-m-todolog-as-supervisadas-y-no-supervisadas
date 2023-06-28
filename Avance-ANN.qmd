@@ -1,0 +1,284 @@
+---
+title: "Aplicación de metodologías supervisadas y no supervisadas para la clisifcación de fireware"
+author: "Diego Garcia, Mauricio Lucero, Diego Pinto"
+format: pdf
+editor: visual
+---
+
+En el estudio realizado se analizó un registro de funcionamiento de un firewall y se tiene como objetivo predecir una variable reclasificada a partir de la variable categórica, teniendo como respuesta allow, deny, drop y reset both, en función del resto de atributos. Esto con el fin de predecir el comportamiento del firewall y el tráfico de datos en la red estudiada.
+
+```{r}
+#Uso de paquetes
+library(readr)
+library(DataExplorer)
+library(factoextra)
+library(tidyverse)
+library(ggplot2)
+library(caret)
+library(e1071)
+library(caTools)
+library(plotly)
+library(pROC)
+library(MASS)
+library(dplyr)
+library(PRROC)
+library(class)
+library(tree)
+library(rpart)
+library(rpart.plot)
+library(stargazer)
+library(broom)
+library(modelr)
+library(nnet)
+library(gridExtra)
+library(dplyr)
+library(cluster)
+library(purrr)
+library(rsample)
+library(parsnip)
+library(recipes)
+library(workflows)
+library(yardstick)
+library(tensorflow)
+library(keras)
+library(reticulate)
+
+
+
+set.seed(163) #uso de semilla
+
+```
+
+## Análisis Exploratorio de Dato
+
+```{r}
+df <- read.csv("log2.csv") #lectura de data frame
+glimpse(df)
+
+```
+
+```{r}
+plot_bar(df) #visualización de variable categórica
+```
+
+```{r}
+
+sum(df$Action == "reset-both") #cantidad de observaciones con el valor de reset-both
+
+```
+
+```{r}
+plot_intro(df) #visualización del data frame
+```
+
+### Matríz de Correlaciónes
+
+```{r}
+plot_correlation(df) #observación de la correlación de las variables del data frame
+```
+
+```{r}
+#Reducción de correlación entre variables
+df=df %>% dplyr::select(-c("Bytes.Sent","Bytes.Received","pkts_sent","pkts_received"))
+df$Bytes <- log(df$Bytes)
+
+plot_correlation(df)
+```
+
+### **Box Plot**
+
+```{r}
+#Identificación de datos anómalos
+
+variables <- c("Source.Port", "Destination.Port", "NAT.Source.Port", "NAT.Destination.Port", "Bytes", "Bytes", "Packets", "Elapsed.Time..sec.")
+
+plots <- list()
+
+for (variable in variables) {
+  plot <- ggplot(df) +
+    geom_boxplot(aes(x = Action, y = .data[[variable]], fill = Action), shape = "circle") +
+    scale_fill_hue(direction = -1) +
+    theme_gray() +
+    ggtitle(paste("Gráfico de", variable))
+  print(plot)
+  plots[[variable]] <- plot
+}
+
+```
+
+### Outliers
+
+```{r}
+#Eliminación de datos anomalos
+for (i in c("Source.Port", "Destination.Port", "NAT.Source.Port", "NAT.Destination.Port","Elapsed.Time..sec.","Bytes","Packets"))
+{
+outliers <- boxplot.stats(df[[i]])$out
+df[[i]][df[[i]] %in% outliers] <- NA
+}
+df <- filter_if(df, is.numeric , all_vars(!is.na(.)))
+```
+
+```{r}
+#Visualización de variables sin datos anómalos
+variables <- c("Source.Port", "Destination.Port", "NAT.Source.Port", "NAT.Destination.Port", "Bytes", "Bytes", "Packets", "Elapsed.Time..sec.")
+
+plots <- list()
+
+for (variable in variables) {
+  plot <- ggplot(df) +
+    geom_boxplot(aes(x = Action, y = .data[[variable]], fill = Action), shape = "circle") +
+    scale_fill_hue(direction = -1) +
+    theme_gray() +
+    ggtitle(paste("Gráfico de", variable))
+  print(plot)
+  plots[[variable]] <- plot
+}
+```
+
+### Análisis de Componentes Principales
+
+```{r}
+db=df %>% dplyr::select(-Action)
+pca <- prcomp(db, scale = TRUE)
+prop_varianza <- pca$sdev^2 / sum(pca$sdev^2)
+```
+
+```{r}
+prop_varianza_acum <- cumsum(prop_varianza)
+pca_var_acum<-ggplot(data = data.frame(prop_varianza_acum, pc = 1:length(prop_varianza)), aes(x = pc, y = prop_varianza_acum, group = 1)) +
+  geom_point() +  geom_line() +  theme_bw() +  labs(x = "Componente principal", y = "Prop. varianza explicada acumulada")
+pca_var_acum
+```
+
+```{r}
+library(corrplot)
+var <- get_pca_var(pca)
+corrplot(var$cos2, is.corr = FALSE)
+```
+
+```{r}
+plot_prcomp(db) 
+```
+
+## Métodos Supervisados
+
+```{r}
+df$Action[df$Action == "allow"]<-1
+df$Action[df$Action == "drop"]<-0
+df$Action[df$Action == "deny"]<-0
+df$Action[df$Action == "reset-both"]<-0
+df$Action <- as.double(df$Action)
+```
+
+```{r}
+#Creación del conjunto de entrenamiento y de prueba
+split = sample.split(df$Action , SplitRatio = 0.8)
+train <- df[split==TRUE,]
+test <- df[split ==FALSE,]
+```
+
+#### Redes Neuronales Artificiales
+```{r}
+library(neuralnet)
+concrete_model <-  neuralnet(Action ~ ., data = train, hidden = c(2,3), linear.output = TRUE)
+plot(concrete_model, rep="best")
+```
+
+```{r}
+predictions <- compute(concrete_model, test)
+predicted_values <- predictions$net.result
+predicted_values <- as.numeric(predicted_values)
+cor(predicted_values, test$Action)
+```
+
+```{r}
+# Definir tamaños de subconjuntos de entrenamiento
+subset_sizes <- seq(500, nrow(train), by = 500)
+
+# Inicializar vectores para almacenar resultados
+cor_values <- numeric(length(subset_sizes))
+
+# Entrenar la red neuronal con diferentes tamaños de subconjuntos de entrenamiento
+for (i in 1:length(subset_sizes)) {
+  subset <- train[1:subset_sizes[i], ]  # Subconjunto de entrenamiento
+  
+  # Entrenar la red neuronal
+  concrete_model <- neuralnet(Action ~ ., data = subset, hidden = c(2,3), linear.output = TRUE)
+  
+  # Calcular predicciones en los datos de prueba
+  predictions <- compute(concrete_model, test)
+  predicted_values <- as.numeric(predictions$net.result)
+  
+  # Calcular correlación entre las predicciones y los valores reales
+  cor_values[i] <- cor(predicted_values, test$Action)
+}
+
+# Graficar la curva de aprendizaje
+plot(subset_sizes, cor_values, type = "l", xlab = "Tamaño del subconjunto de entrenamiento", ylab = "Correlación")
+```
+
+
+
+```{r}
+concrete_model3 <-  neuralnet(Action ~ ., data = train, hidden = c(5, 7,3), linear.output = TRUE)
+plot(concrete_model3, rep="best")
+```
+
+```{r}
+predictions3 <- compute(concrete_model3, test)
+predicted_values3 <- predictions3$net.result
+predicted_values3 <- as.numeric(predicted_values3)
+cor(predicted_values3, test$Action)
+```
+
+```{r}
+# Calcular las predicciones en los datos de entrenamiento
+train_predictions <- compute(concrete_model3, train)$net.result
+train_predictions <- as.numeric(train_predictions)
+
+# Calcular las predicciones en los datos de prueba
+test_predictions <- predicted_values3
+
+# Calcular la correlación entre las predicciones y los valores reales en los datos de entrenamiento
+train_correlation <- cor(train_predictions, train$Action)
+
+# Calcular la correlación entre las predicciones y los valores reales en los datos de prueba
+test_correlation <- cor(test_predictions, test$Action)
+
+# Imprimir las correlaciones
+print(paste("Correlación en datos de entrenamiento:", train_correlation))
+print(paste("Correlación en datos de prueba:", test_correlation))
+```
+
+
+```{r}
+# Definir tamaños de subconjuntos de entrenamiento
+subset_sizes <- seq(500, nrow(train), by = 500)
+
+# Inicializar vectores para almacenar resultados
+cor_values <- numeric(length(subset_sizes))
+
+# Entrenar la red neuronal con diferentes tamaños de subconjuntos de entrenamiento
+for (i in 1:length(subset_sizes)) {
+  subset <- train[1:subset_sizes[i], ]  # Subconjunto de entrenamiento
+  
+  # Entrenar la red neuronal
+  concrete_model <- neuralnet(Action ~ ., data = subset, hidden = c(5, 7,3), linear.output = TRUE)
+  
+  # Calcular predicciones en los datos de prueba
+  predictions <- compute(concrete_model, test)
+  predicted_values <- as.numeric(predictions$net.result)
+  
+  # Calcular correlación entre las predicciones y los valores reales
+  cor_values[i] <- cor(predicted_values, test$Action)
+}
+
+# Graficar la curva de aprendizaje
+plot(subset_sizes, cor_values, type = "l", xlab = "Tamaño del subconjunto de entrenamiento", ylab = "Correlación")
+```
+
+```{r}
+library(rmarkdown)
+render("ruta_del_archivo.R", output_format = "pdf_document")
+```
+
